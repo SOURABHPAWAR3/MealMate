@@ -1,0 +1,15 @@
+# Node modules and Python env
+node_modules/
+.env
+__pycache__/
+*.pyc
+venv/
+env/
+
+# Build files
+dist/
+build/
+
+# OS junk files
+.DS_Store
+Thumbs.db
