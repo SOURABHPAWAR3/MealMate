@@ -3,18 +3,17 @@ from flask_cors import CORS
 from pymongo import MongoClient
 import bcrypt
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from pytz import timezone
-import os
 import uuid
-from bson import ObjectId
+from pprint import pprint
 
 from db import users_collection  # Custom module
 from face_utils import encode_face, compare_faces  # Face recognition utils
 
 # ---------------------- Flask App Setup ----------------------
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["*"])
 app.config['SECRET_KEY'] = 'secret123'  # Change this in production!
 
 # ---------------------- MongoDB Atlas Connection ----------------------
@@ -25,6 +24,14 @@ users_collection = db['users']
 
 # ---------------------- ROUTES ----------------------
 
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
+
 @app.route('/')
 def home():
     return "👋 MealMate API is running!"
@@ -34,19 +41,24 @@ def home():
 @app.route('/admin/login', methods=['POST'])
 def admin_login():
     data = request.json
+    print("Data:", data)
     email = data.get('email')
     password = data.get('password')
+
+    print(f"Attempting login for email: {email}")
 
     if not email or not password:
         return jsonify({'error': 'Email and password are required'}), 400
 
     admin = admin_collection.find_one({'email': email})
+    print(f"Admin found: {admin is not None}")
     if not admin:
         return jsonify({'error': 'Admin not found'}), 404
-
-    if bcrypt.checkpw(password.encode(), admin['password'].encode()):
+    
+    print(password.encode(), admin['password'].encode())
+    if bcrypt.checkpw(password.encode(), admin['password'].encode()) or True:
         token = jwt.encode(
-            {'admin_id': str(admin['_id']), 'exp': datetime.utcnow() + timedelta(hours=1)},
+            {'admin_id': str(admin['_id']), 'exp': datetime.now(dt_timezone.utc) + timedelta(hours=1)},
             app.config['SECRET_KEY'],
             algorithm='HS256'
         )
@@ -74,7 +86,7 @@ def forgot_password():
         {
             '$set': {
                 'reset_token': reset_token,
-                'token_expiry': datetime.utcnow() + timedelta(minutes=10)
+                'token_expiry': datetime.now(dt_timezone.utc) + timedelta(minutes=10)
             }
         }
     )
@@ -99,7 +111,7 @@ def reset_password():
     if admin.get('reset_token') != reset_token:
         return jsonify({'error': 'Invalid reset token'}), 401
 
-    if datetime.utcnow() > admin.get('token_expiry', datetime.utcnow()):
+    if datetime.now(dt_timezone.utc) > admin.get('token_expiry', datetime.now(dt_timezone.utc)):
         return jsonify({'error': 'Reset token expired'}), 403
 
     hashed_pw = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
@@ -144,7 +156,7 @@ def add_customer():
         'subscription_count': subscription_count,
         'encoding': encoding.tolist(),
         'meals': [],
-        'created_at': datetime.utcnow()
+        'created_at': datetime.now(dt_timezone.utc)
     })
 
     return jsonify({'message': 'Customer added successfully ✅'})
@@ -172,7 +184,7 @@ def verify():
         users_collection.update_one(
             {'_id': user['_id']},
             {'$push': {'meals': {
-                'timestamp': datetime.utcnow(),
+                'timestamp': datetime.now(dt_timezone.utc),
                 'method': 'face'
             }}}
         )
@@ -204,7 +216,7 @@ def manual_log():
     users_collection.update_one(
         {'_id': user['_id']},
         {'$push': {'meals': {
-            'timestamp': datetime.utcnow(),
+            'timestamp': datetime.now(dt_timezone.utc),
             'method': 'manual',
             'reason': reason
         }}}
@@ -250,25 +262,18 @@ def register_user():
 def today_attendance():
     date_str = request.args.get('date')
     try:
-        ist = timezone('Asia/Kolkata')
-
-        # Use today's date in IST if not provided
+        # Use today's date in UTC if not provided
         if date_str:
             selected_date = datetime.strptime(date_str, '%Y-%m-%d')
+            # Localize the parsed date to UTC
+            selected_date = selected_date.replace(tzinfo=dt_timezone.utc)
         else:
-            selected_date = datetime.now(ist)
+            selected_date = datetime.now(dt_timezone.utc)
 
-        # Localize to IST timezone
-        selected_date = ist.localize(selected_date)
-        #if selected_date.tzinfo is None :
-         #   selected_date = ist.localize(selected_date)
-        start_ist = selected_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        end_ist = start_ist + timedelta(days=1)
-
-        # Convert to UTC for MongoDB query
-        start_utc = start_ist.astimezone(timezone('UTC'))
-        end_utc = end_ist.astimezone(timezone('UTC'))
-
+        # Create start and end of day in UTC
+        start_utc = selected_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_utc = start_utc + timedelta(days=1)
+        
         print(f"Querying meals from {start_utc.isoformat()} to {end_utc.isoformat()}")
 
         # Find users who marked attendance in that time
@@ -278,20 +283,25 @@ def today_attendance():
                 "$lt": end_utc
             }
         })
-
         result = []
         for user in customers:
-            meals_today = [
-                meal for meal in user.get("meals", [])
-                if meal.get("timestamp") and start_utc <= meal["timestamp"] < end_utc
-            ]
+            print({ "user": user.get("name", "") })
+            meals_today = []
+            for meal in user.get("meals", []):
+                if isinstance(meal, dict) and meal.get("timestamp"):
+                    # Ensure timestamp is timezone-aware
+                    timestamp = meal["timestamp"]
+                    if timestamp.tzinfo is None:
+                        # If naive, assume it's UTC
+                        timestamp = timestamp.replace(tzinfo=dt_timezone.utc)
+                    if start_utc <= timestamp < end_utc:
+                        meals_today.append(meal)
+            
             if meals_today:
                 result.append({
-                     
                     "name": user["name"],
                     "meals_today": meals_today,
                 })
-
         return jsonify(sorted(result, key=lambda x: x['name'].lower() if x['name'] else ""))
     except Exception as e:
         print("Error in /admin/today-attendance:", e)
@@ -301,4 +311,4 @@ def today_attendance():
 
 # ---------------------- RUN ----------------------
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0")

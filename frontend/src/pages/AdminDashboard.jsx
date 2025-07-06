@@ -1,5 +1,5 @@
 // src/pages/AdminDashboard.jsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import AddCustomer from "./AddCustomer";
@@ -8,25 +8,28 @@ const AdminDashboard = () => {
   const navigate = useNavigate();
   const [attendanceToday, setAttendanceToday] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedDate, setSelectedDate] = useState(new Date().toLocaleDateString('en-CA'));
 
   const handleLogout = () => {
     localStorage.removeItem('token');
     navigate('/admin');
   };
 
-  const fetchAttendance = async () => {
+  const fetchAttendance = useCallback(async () => {
     try {
-      const res = await axios.get(`http://localhost:5000/admin/today-attendance?date=${selectedDate}`);
+      // Convert local date to UTC date
+      const localDate = new Date(selectedDate + 'T00:00:00');
+      const utcDate = localDate.toISOString().split('T')[0];
+      const res = await axios.get(`http://localhost:5000/admin/today-attendance?date=${utcDate}`);
       setAttendanceToday(res.data);
     } catch (error) {
       console.error("Failed to fetch attendance:", error);
     }
-  };
+  }, [selectedDate]);
 
   useEffect(() => {
     fetchAttendance();
-  }, [selectedDate]);
+  }, [fetchAttendance]);
 
   const filteredAttendance = attendanceToday
     .filter(customer =>
@@ -106,9 +109,10 @@ const AdminDashboard = () => {
               />
               <button
                 onClick={() => {
-                  axios.get(`http://localhost:5000/admin/today-attendance?date=${selectedDate}`)
-                    .then((res) => setAttendanceToday(res.data))
-                    .catch((err) => console.error("Refresh failed", err));
+                  // axios.get(`http://localhost:5000/admin/today-attendance?date=${selectedDate}`)
+                  //   .then((res) => setAttendanceToday(res.data))
+                  //   .catch((err) => console.error("Refresh failed", err));
+                  fetchAttendance()
                 }}
                 className="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded-md text-white font-medium"
               >
